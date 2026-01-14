@@ -130,6 +130,9 @@
         state: started
         daemon_reload: true
 
+    - name: Appliquer les changements (restart gunicorn maintenant)
+      ansible.builtin.meta: flush_handlers
+
     - name: Attendre que l'application réponde sur le port HTTP
       ansible.builtin.wait_for:
         host: "{{ ansible_host }}"
