@@ -1,0 +1,148 @@
+---
+- name: Déployer l'application todolist (Django + SQLite + Gunicorn)
+  hosts: my_infra
+  become: true
+  gather_facts: true
+
+  vars:
+    app_name: todolist
+    app_user: admin
+    app_dir: /opt/todolist
+    venv_dir: /opt/todolist/.venv
+    app_port: 8000
+
+    repo_url: "https://github.com/gaeldb/to-do-list.git"
+    repo_version: "main"
+
+
+    # WSGI module (ajuste si le projet n'est pas "todo")
+    wsgi_module: "todo.wsgi:application"
+
+    # Le fichier settings.py à modifier (ajuste si chemin différent)
+    settings_path: "{{ app_dir }}/todo/settings.py"
+
+  handlers:
+    - name: Restart gunicorn
+      ansible.builtin.systemd:
+        name: "gunicorn-{{ app_name }}"
+        state: restarted
+        daemon_reload: true
+
+  tasks:
+    - name: Installer les dépendances système (apt)
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3
+          - python3-venv
+          - python3-pip
+        update_cache: true
+
+    - name: Créer le répertoire de l'application
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Télécharger les sources depuis GitHub (branche main)
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: "{{ repo_version }}"
+        update: true
+        force: true
+      become_user: "{{ app_user }}"
+
+    - name: Configurer DEBUG dans settings.py
+      ansible.builtin.lineinfile:
+        path: "{{ settings_path }}"
+        regexp: '^DEBUG\s*='
+        line: "DEBUG = {{ debug_mode | default(true) }}"
+        backup: true
+      notify: Restart gunicorn
+
+    - name: Créer l'environnement virtuel Python
+      ansible.builtin.command: "python3 -m venv {{ venv_dir }}"
+      args:
+        creates: "{{ venv_dir }}/bin/activate"
+      become_user: "{{ app_user }}"
+
+    - name: Mettre à jour pip dans le venv
+      ansible.builtin.pip:
+        name: pip
+        state: latest
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_command: "python3 -m venv"
+      become_user: "{{ app_user }}"
+
+    - name: Chercher un requirements.txt dans le projet
+      ansible.builtin.find:
+        paths: "{{ app_dir }}"
+        patterns: "requirements.txt"
+        recurse: true
+      register: req_files
+
+    - name: Installer les dépendances Python via requirements.txt (si présent)
+      ansible.builtin.pip:
+        requirements: "{{ req_files.files[0].path }}"
+        virtualenv: "{{ venv_dir }}"
+      become_user: "{{ app_user }}"
+      when: req_files.matched | int > 0
+
+    - name: Installer Django + Gunicorn (fallback si pas de requirements.txt)
+      ansible.builtin.pip:
+        name:
+          - django
+          - gunicorn
+        virtualenv: "{{ venv_dir }}"
+      become_user: "{{ app_user }}"
+      when: req_files.matched | int == 0
+
+    - name: Configurer ALLOWED_HOSTS (ajouter l'IP de la VM)
+      ansible.builtin.lineinfile:
+        path: "{{ settings_path }}"
+        regexp: '^ALLOWED_HOSTS\s*='
+        line: 'ALLOWED_HOSTS = ["{{ ansible_host }}", "localhost", "127.0.0.1"]'
+        backup: true
+      notify: Restart gunicorn
+
+    - name: Lancer les migrations (SQLite)
+      ansible.builtin.command: "{{ venv_dir }}/bin/python manage.py migrate"
+      args:
+        chdir: "{{ app_dir }}"
+      become_user: "{{ app_user }}"
+
+    - name: Déployer le service systemd Gunicorn (template)
+      ansible.builtin.template:
+        src: "templates/gunicorn.service.j2"
+        dest: "/etc/systemd/system/gunicorn-{{ app_name }}.service"
+        mode: "0644"
+      notify: Restart gunicorn
+
+    - name: Activer et démarrer Gunicorn
+      ansible.builtin.systemd:
+        name: "gunicorn-{{ app_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Attendre que l'application réponde sur le port HTTP
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ app_port }}"
+        timeout: 60
+
+    - name: Tester l'URL de l'application (HTTP)
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ app_port }}/"
+        method: GET
+        return_content: false
+        status_code: [200, 301, 302]
+      register: http_check
+
+    - name: Afficher le status HTTP obtenu
+      ansible.builtin.debug:
+        msg: "Serveur {{ inventory_hostname }} OK - HTTP {{ http_check.status }} sur http://{{ ansible_host }}:{{ app_port }}/"
+
