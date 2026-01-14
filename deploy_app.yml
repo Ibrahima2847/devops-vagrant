@@ -100,13 +100,14 @@
       become_user: "{{ app_user }}"
       when: req_files.matched | int == 0
 
-    - name: Configurer ALLOWED_HOSTS (ajouter l'IP de la VM)
+    - name: Configurer ALLOWED_HOSTS pour autoriser l'IP de la VM
       ansible.builtin.lineinfile:
         path: "{{ settings_path }}"
         regexp: '^ALLOWED_HOSTS\s*='
         line: 'ALLOWED_HOSTS = ["{{ ansible_host }}", "localhost", "127.0.0.1"]'
         backup: true
       notify: Restart gunicorn
+
 
     - name: Lancer les migrations (SQLite)
       ansible.builtin.command: "{{ venv_dir }}/bin/python manage.py migrate"
