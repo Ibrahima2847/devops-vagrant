@@ -44,7 +44,7 @@ Vagrant.configure("2") do |config|
   end
 
   # =========================
-  # VM PROD
+  # VM PROD1
   # =========================
   config.vm.define "prod" do |prod|
     prod.vm.hostname = "app-prod1"
@@ -57,7 +57,21 @@ Vagrant.configure("2") do |config|
     end
   end
 
-    # =========================
+  # =========================
+  # VM PROD2
+  # =========================
+config.vm.define "prod2" do |prod2|
+  prod2.vm.hostname = "app-prod2"
+  prod2.vm.network "private_network", ip: "192.168.56.12"
+
+  prod2.vm.provider "virtualbox" do |vb|
+    vb.name = "app-prod2"
+    vb.memory = 1024
+    vb.cpus = 1
+  end
+end
+
+  # =========================
   # VM JENKINS
   # =========================
   config.vm.define "jenkins" do |jenkins|
@@ -69,6 +83,20 @@ Vagrant.configure("2") do |config|
       vb.name = "vm-jenkins"
       vb.memory = 2048
       vb.cpus = 2
+    end
+  end
+
+  # =========================
+  # VM LOAD BALANCER (HAProxy)
+  # =========================
+  config.vm.define "lb-prod" do |lb|
+    lb.vm.hostname = "lb-prod"
+    lb.vm.network "private_network", ip: "192.168.56.20"
+
+    lb.vm.provider "virtualbox" do |vb|
+      vb.name = "lb-prod"
+      vb.memory = 1024
+      vb.cpus = 1
     end
   end
 

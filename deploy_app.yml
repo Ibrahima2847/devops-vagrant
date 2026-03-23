@@ -100,13 +100,12 @@
       become_user: "{{ app_user }}"
       when: req_files.matched | int == 0
 
-    - name: Autoriser tous les hosts en environnement de test
+    - name: Configurer ALLOWED_HOSTS
       ansible.builtin.lineinfile:
         path: "{{ settings_path }}"
         regexp: '^ALLOWED_HOSTS\s*='
-        line: 'ALLOWED_HOSTS = ["*"]'
+        line: 'ALLOWED_HOSTS = ["{{ ansible_host }}", "192.168.56.20", "localhost", "127.0.0.1"]'
         backup: true
-      when: inventory_hostname == "test"
       notify: Restart gunicorn
 
 
