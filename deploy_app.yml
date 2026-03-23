@@ -1,8 +1,9 @@
 ---
-- name: Déployer l'application todolist (Django + SQLite + Gunicorn)
-  hosts: my_infra
+- name: Rolling update de l'application todolist en production
+  hosts: prod_env
   become: true
   gather_facts: true
+  serial: 1
 
   vars:
     app_name: todolist
@@ -12,14 +13,15 @@
     app_port: 8000
 
     repo_url: "https://github.com/gaeldb/to-do-list.git"
-    repo_version: "main"
+    repo_version: "{{ app_version | default('main') }}"
 
-
-    # WSGI module (ajuste si le projet n'est pas "todo")
     wsgi_module: "todo.wsgi:application"
-
-    # Le fichier settings.py à modifier (ajuste si chemin différent)
     settings_path: "{{ app_dir }}/todo/settings.py"
+
+    lb_host: lb_prod
+    lb_ip: "192.168.56.20"
+    haproxy_socket: "/run/haproxy/admin.sock"
+    haproxy_backend: "app_back"
 
   handlers:
     - name: Restart gunicorn
@@ -29,6 +31,16 @@
         daemon_reload: true
 
   tasks:
+    - name: Désactiver le serveur courant dans HAProxy
+      ansible.builtin.shell: |
+        echo "disable server {{ haproxy_backend }}/{{ haproxy_name }}" | socat stdio {{ haproxy_socket }}
+      delegate_to: "{{ lb_host }}"
+      changed_when: true
+
+    - name: Pause courte après désactivation dans HAProxy
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Installer les dépendances système (apt)
       ansible.builtin.apt:
         name:
@@ -46,7 +58,7 @@
         group: "{{ app_user }}"
         mode: "0755"
 
-    - name: Télécharger les sources depuis GitHub (branche main)
+    - name: Télécharger les sources depuis GitHub
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "{{ app_dir }}"
@@ -59,7 +71,7 @@
       ansible.builtin.lineinfile:
         path: "{{ settings_path }}"
         regexp: '^DEBUG\s*='
-        line: "DEBUG = {{ debug_mode | default(true) }}"
+        line: "DEBUG = {{ debug_mode | default(false) }}"
         backup: true
       notify: Restart gunicorn
 
@@ -84,14 +96,14 @@
         recurse: true
       register: req_files
 
-    - name: Installer les dépendances Python via requirements.txt (si présent)
+    - name: Installer les dépendances Python via requirements.txt
       ansible.builtin.pip:
         requirements: "{{ req_files.files[0].path }}"
         virtualenv: "{{ venv_dir }}"
       become_user: "{{ app_user }}"
       when: req_files.matched | int > 0
 
-    - name: Installer Django + Gunicorn (fallback si pas de requirements.txt)
+    - name: Installer Django et Gunicorn si pas de requirements.txt
       ansible.builtin.pip:
         name:
           - django
@@ -104,18 +116,17 @@
       ansible.builtin.lineinfile:
         path: "{{ settings_path }}"
         regexp: '^ALLOWED_HOSTS\s*='
-        line: 'ALLOWED_HOSTS = ["{{ ansible_host }}", "192.168.56.20", "localhost", "127.0.0.1"]'
+        line: 'ALLOWED_HOSTS = ["{{ ansible_host }}", "{{ lb_ip }}", "localhost", "127.0.0.1"]'
         backup: true
       notify: Restart gunicorn
 
-
-    - name: Lancer les migrations (SQLite)
+    - name: Lancer les migrations SQLite
       ansible.builtin.command: "{{ venv_dir }}/bin/python manage.py migrate"
       args:
         chdir: "{{ app_dir }}"
       become_user: "{{ app_user }}"
 
-    - name: Déployer le service systemd Gunicorn (template)
+    - name: Déployer le service systemd Gunicorn
       ansible.builtin.template:
         src: "templates/gunicorn.service.j2"
         dest: "/etc/systemd/system/gunicorn-{{ app_name }}.service"
@@ -129,16 +140,16 @@
         state: started
         daemon_reload: true
 
-    - name: Appliquer les changements (restart gunicorn maintenant)
+    - name: Appliquer les changements immédiatement
       ansible.builtin.meta: flush_handlers
 
-    - name: Attendre que l'application réponde sur le port HTTP
+    - name: Attendre que l'application réponde sur le port HTTP local
       ansible.builtin.wait_for:
         host: "{{ ansible_host }}"
         port: "{{ app_port }}"
         timeout: 60
 
-    - name: Tester l'URL de l'application (HTTP)
+    - name: Tester la santé de l'application sur la VM mise à jour
       ansible.builtin.uri:
         url: "http://{{ ansible_host }}:{{ app_port }}/"
         method: GET
@@ -150,3 +161,25 @@
       ansible.builtin.debug:
         msg: "Serveur {{ inventory_hostname }} OK - HTTP {{ http_check.status }} sur http://{{ ansible_host }}:{{ app_port }}/"
 
+    - name: Réactiver le serveur courant dans HAProxy
+      ansible.builtin.shell: |
+        echo "enable server {{ haproxy_backend }}/{{ haproxy_name }}" | socat stdio {{ haproxy_socket }}
+      delegate_to: "{{ lb_host }}"
+      changed_when: true
+
+    - name: Pause courte après réactivation dans HAProxy
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Vérifier que le serveur est de nouveau joignable via le load balancer
+      ansible.builtin.uri:
+        url: "http://{{ lb_ip }}/"
+        method: GET
+        return_content: false
+        status_code: [200, 301, 302]
+      delegate_to: localhost
+      register: lb_check
+
+    - name: Afficher le résultat du test via le load balancer
+      ansible.builtin.debug:
+        msg: "Load balancer OK après réintégration de {{ inventory_hostname }} - HTTP {{ lb_check.status }}"

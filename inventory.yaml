@@ -1,18 +1,25 @@
-my_infra:
 all:
   children:
     test_env:
       hosts:
         test:
           ansible_host: 192.168.56.10
+
     prod_env:
       hosts:
         prod:
           ansible_host: 192.168.56.11
+          haproxy_name: app-prod1
         prod2:
           ansible_host: 192.168.56.12
+          haproxy_name: app-prod2
+
+    lb_env:
+      hosts:
+        lb_prod:
+          ansible_host: 192.168.56.20
+
   vars:
     ansible_user: admin
     ansible_ssh_private_key_file: ~/id-devops
     ansible_python_interpreter: /usr/bin/python3
-
